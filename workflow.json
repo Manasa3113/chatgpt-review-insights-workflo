@@ -1,0 +1,467 @@
+{
+  "name": "Chatgpt Review Insights Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "Upload reviews CSV",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Reviews CSV",
+              "fieldType": "file",
+              "acceptFileTypes": ".csv"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "6b2dc053-abfc-47c1-bec1-c4424f221921",
+      "name": "On form submission",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.6,
+      "position": [
+        -800,
+        -96
+      ],
+      "webhookId": "eac44fdf-d420-4e1e-9b95-a6b0db3c647e"
+    },
+    {
+      "parameters": {
+        "binaryPropertyName": "Reviews_CSV",
+        "options": {}
+      },
+      "id": "6bb07c35-aa74-4dc4-8beb-9a9954c22cf5",
+      "name": "Extract from File",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        -640,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all().map(i => i.json);\n// Groq free tier allows ~8000 tokens per request (prompt + answer), so keep the sample small.\n// Skip very short reviews (generic praise / gibberish) - they add tokens but no insight.\n// Keep reviews short enough to send WHOLE (no truncation) so quotes are always complete sentences.\nconst clean = r => String(r.content || '').replace(/\\s+/g, ' ').trim();\nconst useful = rows.filter(r => { const c = clean(r); return c.split(' ').length >= 4 && c.length <= 160; });\nconst shuffle = arr => {\n  for (let i = arr.length - 1; i > 0; i--) {\n    const j = Math.floor(Math.random() * (i + 1));\n    [arr[i], arr[j]] = [arr[j], arr[i]];\n  }\n  return arr;\n};\nconst low = shuffle(useful.filter(r => Number(r.score) <= 3)).slice(0, 50);\nconst high = shuffle(useful.filter(r => Number(r.score) >= 4)).slice(0, 8);\nconst picked = [...low, ...high];\n\nconst text = picked\n  .map(r => `[${r.score}★] ${clean(r)}`)\n  .join('\\n');\n\nreturn [{ json: {\n  reviews_text: text,\n  total_reviews: rows.length,\n  sent_to_ai: picked.length,\n  date: new Date().toISOString().slice(0, 10)\n}}];"
+      },
+      "id": "b40506f6-723b-4044-a54f-d6f4fc0b141b",
+      "name": "Code in JavaScript",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -464,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are a product analyst. Analyze the Google Play reviews below (format: [rating★] text) for ChatGPT in India.\n\nReturn JSON with:\n1. themes: at most 5 themes with name, approximate share_pct of reviews, and sentiment.\n2. top_3: the names of the 3 largest themes.\n3. quotes: exactly 3 real quotes copied verbatim, one per top theme, in English, no names or personal details.\n4. fee_issue: the single most recurring confusion or pain point about a fee, price, or charge. Include review_count, 2 verbatim quotes and a one-sentence summary. If there is no clear fee confusion, return the closest pricing or paid-plan theme and set confidence to \"low\". Never invent a complaint that is not in the reviews.\n\nIgnore spam, gibberish and generic one-word praise.\n\nRules:\n- top_3 must be the 3 largest themes that describe problems or complaints. Do not include positive themes.\n- Quotes must be copied exactly from the review text, with the \"[N★]\" prefix removed. Only use complete sentences, never cut-off text.\n- Pick one quote per top_3 theme (3 quotes total).\n- fee_issue: name it \"Free-tier usage limits vs. ChatGPT Plus cost\". Count only reviews that mention running out of free usage, upgrade prompts, or the price of Plus. Set confidence to high only if review_count >= 10, medium if 5-9, otherwise low.\n- fee_issue.quotes: 2 exact quotes with the \"[N★]\" prefix removed.\n- Keep it short: summary max 25 words, theme names max 8 words. Decide quickly, do not deliberate at length.\n- Output ONLY the JSON object. No markdown, no code fences, no text before or after.\n\nREVIEWS:\n{{ $json.reviews_text }}",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": []
+        },
+        "batching": {}
+      },
+      "id": "33da6fda-acd7-4a9e-b17d-920797b8510e",
+      "name": "Basic LLM Chain",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        -272,
+        -96
+      ],
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "model": "openai/gpt-oss-120b",
+        "options": {
+          "maxTokensToSample": 5000,
+          "temperature": 0.1
+        }
+      },
+      "id": "2c5a73d9-a59f-4b12-90d0-4d9c4dc059bc",
+      "name": "Groq Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        -608,
+        144
+      ],
+      "credentials": {
+        "groqApi": {
+          "id": "pgg9msbLWdndd6dL",
+          "name": "Groq account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{\n  \"themes\": [{\"name\": \"Technical Issues & Bugs\", \"share_pct\": 23.8, \"sentiment\": \"negative\"}],\n  \"top_3\": [\"theme 1\", \"theme 2\", \"theme 3\"],\n  \"quotes\": [{\"theme\": \"theme 1\", \"quote\": \"exact review text\", \"rating\": 1}],\n  \"fee_issue\": {\n    \"name\": \"Free-tier usage limits vs. ChatGPT Plus cost\",\n    \"review_count\": 12,\n    \"confidence\": \"medium\",\n    \"quotes\": [\"exact quote\", \"exact quote\"],\n    \"summary\": \"one sentence\"\n  }\n}"
+      },
+      "id": "2a152b29-f62c-4752-a241-aa98a15d71a1",
+      "name": "Structured Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        -432,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Using ONLY this analysis:\n{{ JSON.stringify($json.output) }}\n\nTitle: Weekly Product Pulse – ChatGPT India (reviews Aug 17 – Oct 12, 2026). Hard limit: 250 words.\nUse these sections:\n1. Top 3 themes (one line each, with share %)\n2. Supporting user quotes (3, copied exactly from \"quotes\")\n3. Key observation (what is going wrong or trending, mention the fee issue)\n4. 3 action ideas for the product team\nDo not invent facts that are not in the analysis.Hard limit: 220 words in total, including headings. Keep each quote under 25 words (shorten with \"...\" if needed, never change the words).Note: a low-cost ChatGPT Go plan (₹399/month) already exists in India. Do not suggest creating a new cheaper plan. Suggest clearer in-app communication of free-tier limits and of the Go and Plus options instead.",
+        "batching": {}
+      },
+      "id": "c5736f51-a693-4c39-bc54-06871a86569e",
+      "name": "Basic LLM Chain1",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        0,
+        -96
+      ],
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "amount": 60
+      },
+      "id": "b694049c-46f4-419a-a3f3-7938ef68df88",
+      "name": "Rate Limit Pause",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        80,
+        336
+      ],
+      "webhookId": "a8085fd0-b1aa-474e-891b-0314049172a6"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Fee issue found in user reviews:\n{{ $('Basic LLM Chain').first().json.output.fee_issue.name }}\n{{ $('Basic LLM Chain').first().json.output.fee_issue.summary }}\n\nOfficial source text (use ONLY this):\n- Free tier usage is limited, and limits and the default model can change over time.\n- Image generation, file uploads, data analysis and voice have separate usage limits from the main chat limit.\n- Plus users have higher usage limits than Free users.\n- If you reach a limit on a Free account, your usage limits reset when you upgrade to a Plus, Pro or Business plan.\n- ChatGPT Plus is a paid subscription, listed in India at [- ChatGPT Plus is a paid subscription, listed in India at ₹1,999 per month (including GST), billed monthly.] per month, billed monthly.\n- Plus subscriptions may include usage limits such as message caps, especially during high demand.\n- You can manage your subscription, view invoices, and cancel from your ChatGPT account.\n- Annual billing and paying for multiple months in advance are not supported for Plus.\n- If you were charged for Plus but your account still shows the Free plan, log out of all devices and log back in with the correct account.\n\nWrite a customer-support explanation as at most 6 bullet points.\nRules: neutral, facts-only tone. No promises, no opinions, no marketing words.\nUse only the source text above. Prioritize the points that address the fee issue above.\nDo not add links or dates.\n- ChatGPT Go is listed in India at ₹399 per month (inclusive of GST), with more messages, image creation, memory and storage than Free.\nAlways include the Go and Plus prices. Merge related points so the total stays at 6 bullets or fewer.\n",
+        "batching": {}
+      },
+      "id": "b24746b4-4062-4333-bb98-0b5a9285298f",
+      "name": "Basic LLM Chain2",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        272,
+        -96
+      ],
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "jsCode": "const analysis = $('Basic LLM Chain').first().json.output;\nconst pulse = $('Basic LLM Chain1').first().json.text.replace(/\\*\\*/g, '');\nconst bullets = $input.first().json.text.replace(/\\*\\*/g, '');\nconst today = new Date().toISOString().slice(0, 10);\nconst links = [\n  'https://help.openai.com/en/articles/9275245',\n  'https://openai.com/chatgpt/pricing'\n];\nreturn [{ json: {\n  date: today,\n  top_themes: analysis.top_3,\n  weekly_pulse: pulse,\n  identified_fee_issue: analysis.fee_issue.name + ': ' + analysis.fee_issue.summary,\n  explanation_bullets: bullets + '\\n\\nLast checked: ' + today,\n  source_links: links\n}}];"
+      },
+      "id": "bd7deeca-972d-4802-aa3c-2d0c9ee43153",
+      "name": "Merge Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -192,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "resume": "form",
+        "formTitle": "Approve Weekly Pulse",
+        "formDescription": "=Review before saving.\n\nPULSE:\n{{ $json.weekly_pulse }}\n\nFEE EXPLAINER:\n{{ $json.explanation_bullets }}",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Decision",
+              "fieldType": "dropdown",
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "Approve"
+                  },
+                  {
+                    "option": "Reject"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "6e46a1c6-a828-4513-be78-f1013768ffc5",
+      "name": "Approval Gate",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -48,
+        160
+      ],
+      "webhookId": "79b0c5b4-fe40-4bff-86b8-bf736959d447"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "0f2318ce-1ecb-43b8-9e18-3d8266e86c4e",
+              "leftValue": "={{ $json.Decision }}",
+              "rightValue": "Approve",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "d98c9a29-944f-4307-82a9-421dc398e9a1",
+      "name": "If",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        80,
+        144
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentURL": "https://docs.google.com/document/d/13LpWhD3_ZbDfTBj5LPSZJmwzwB3jn2bMYrbt30llC_Y/edit?tab=t.0",
+        "actionsUi": {
+          "actionFields": [
+            {
+              "action": "insert",
+              "text": "=Date: {{ $('Merge Payload').first().json.date }}\nTop themes: {{ $('Merge Payload').first().json.top_themes.join(', ') }}\nFee issue: {{ $('Merge Payload').first().json.identified_fee_issue }}\n\nWEEKLY PULSE:\n{{ $('Merge Payload').first().json.weekly_pulse }}\n\nFEE EXPLANATION:\n{{ $('Merge Payload').first().json.explanation_bullets }}\n\nSources: {{ $('Merge Payload').first().json.source_links.join(' | ') }}\n-----------------------------"
+            }
+          ]
+        }
+      },
+      "id": "665a2638-65f0-45d7-9a52-537cba7a4a0f",
+      "name": "Update a document",
+      "type": "n8n-nodes-base.googleDocs",
+      "typeVersion": 2,
+      "position": [
+        304,
+        48
+      ],
+      "credentials": {
+        "googleDocsOAuth2Api": {
+          "id": "lYuejjDTzFNXtdF8",
+          "name": "Google Docs account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "draft",
+        "subject": "=Weekly Product Pulse + Customer Clarification — {{ $('Merge Payload').first().json.date }}",
+        "message": "=WEEKLY PRODUCT PULSE:\n{{ $('Merge Payload').first().json.weekly_pulse }}\n\nFEE EXPLANATION (support snippet):\n{{ $('Merge Payload').first().json.explanation_bullets }}\n\nSources: {{ $('Merge Payload').first().json.source_links.join(' | ') }}",
+        "options": {}
+      },
+      "id": "5b61b77b-ebc2-4791-ab63-4a08e8dbab32",
+      "name": "Create a draft",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        288,
+        256
+      ],
+      "webhookId": "a71b5232-67fb-422d-82fe-db747e554d1d",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "F7HGaV2vgi1h4LMD",
+          "name": "Gmail account 2"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "On form submission": {
+      "main": [
+        [
+          {
+            "node": "Extract from File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Basic LLM Chain": {
+      "main": [
+        [
+          {
+            "node": "Basic LLM Chain1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "Basic LLM Chain1",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "Basic LLM Chain2",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Basic LLM Chain1": {
+      "main": [
+        [
+          {
+            "node": "Rate Limit Pause",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rate Limit Pause": {
+      "main": [
+        [
+          {
+            "node": "Basic LLM Chain2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Basic LLM Chain2": {
+      "main": [
+        [
+          {
+            "node": "Merge Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Payload": {
+      "main": [
+        [
+          {
+            "node": "Approval Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approval Gate": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Update a document",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update a document": {
+      "main": [
+        [
+          {
+            "node": "Create a draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": true
+  },
+  "versionId": "40fced12-ba5c-4f47-b514-ac17cf3cfa8d",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "0e0bd500522b270843a6442be6432ebe54f076920ea361988d618e097943984a"
+  },
+  "nodeGroups": [],
+  "id": "PTjOj16NdLlO0kKe",
+  "tags": []
+}
